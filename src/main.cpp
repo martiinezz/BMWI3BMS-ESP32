@@ -19,17 +19,132 @@
   SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
-#include "BMSModuleManager.h"
 #include <Arduino.h>
+#include "BMSModuleManager.h"
+#include "main.h"
 #include "config.h"
 #include "SerialConsole.h"
 #include "Logger.h"
 #include "CRC8.h"
-#include <ADC.h> //https://github.com/pedvide/ADC
+#include "rom/rtc.h"
+#include <esp_task_wdt.h>
+
 #include <EEPROM.h>
-#include <FlexCAN.h>//https://github.com/collin80/FlexCAN_Library
+#include <esp32_can.h>
+#include <CANUtil.h>
 #include <SPI.h>
-#include <Filters.h>//https://github.com/JonHub/Filters
+#include <Filters.h> //https://github.com/JonHub/Filters
+
+#include "WiFi.h"
+#include "ESPAsyncWebServer.h"
+#include <AsyncTCP.h>
+#include "LittleFS.h"
+#include <AsyncElegantOTA.h>
+
+
+AsyncWebServer server(80);
+// Search for parameter in HTTP POST request
+const char* PARAM_INPUT_1 = "ssid";
+const char* PARAM_INPUT_2 = "pass";
+const char* PARAM_INPUT_3 = "ip";
+const char* PARAM_INPUT_4 = "gateway";
+
+//Variables to save values from HTML form
+String ssid;
+String pass;
+String ip;
+String gateway;
+
+// File paths to save input values permanently
+const char* ssidPath = "/ssid.txt";
+const char* passPath = "/pass.txt";
+const char* ipPath = "/ip.txt";
+const char* gatewayPath = "/gateway.txt";
+
+IPAddress localIP;
+IPAddress localGateway;
+IPAddress subnet(255, 255, 255, 0);
+
+// Timer variables
+unsigned long prMillis = 0;
+const long interval = 10000;  // interval to wait for Wi-Fi connection (milliseconds)
+
+// Initialize LittleFS
+void initLittleFS() {
+  if (!LittleFS.begin(true)) {
+    Serial.println("An error has occurred while mounting LittleFS");
+  }
+  Serial.println("LittleFS mounted successfully");
+}
+
+
+// Read File from LittleFS
+String readFile(fs::FS &fs, const char * path){
+  Serial.printf("Reading file: %s\r\n", path);
+
+  File file = fs.open(path);
+  if(!file || file.isDirectory()){
+    Serial.println("- failed to open file for reading");
+    return String();
+  }
+  
+  String fileContent;
+  while(file.available()){
+    fileContent = file.readStringUntil('\n');
+    break;     
+  }
+  return fileContent;
+}
+
+// Write file to LittleFS
+void writeFile(fs::FS &fs, const char * path, const char * message){
+  Serial.printf("Writing file: %s\r\n", path);
+
+  File file = fs.open(path, FILE_WRITE);
+  if(!file){
+    Serial.println("- failed to open file for writing");
+    return;
+  }
+  if(file.print(message)){
+    Serial.println("- file written");
+  } else {
+    Serial.println("- frite failed");
+  }
+}
+
+// Initialize WiFi
+bool initWiFi() {
+  if(ssid=="" || ip==""){
+    Serial.println("Undefined SSID or IP address.");
+    return false;
+  }
+
+  WiFi.mode(WIFI_STA);
+  localIP.fromString(ip.c_str());
+  localGateway.fromString(gateway.c_str());
+
+
+  if (!WiFi.config(localIP, localGateway, subnet)){
+    Serial.println("STA Failed to configure");
+    return false;
+  }
+  WiFi.begin(ssid.c_str(), pass.c_str());
+  Serial.println("Connecting to WiFi...");
+
+  unsigned long curMillis = millis();
+  prMillis = curMillis;
+
+  while(WiFi.status() != WL_CONNECTED) {
+    curMillis = millis();
+    if (curMillis - prMillis >= interval) {
+      Serial.println("Failed to connect.");
+      return false;
+    }
+  }
+
+  Serial.println(WiFi.localIP());
+  return true;
+}
 
 #define RESTART_ADDR       0xE000ED0C
 #define READ_RESTART()     (*(volatile uint32_t *)RESTART_ADDR)
@@ -41,29 +156,31 @@ SerialConsole console;
 EEPROMSettings settings;
 
 /////Version Identifier/////////
-int firmver = 221026;
+int firmver = 220719;
 
 //Curent filter//
 float filterFrequency = 5.0 ;
 FilterOnePole lowpassFilter( LOWPASS, filterFrequency );
 
 //Simple BMS V2 wiring//
-const int ACUR2 = A0; // current 1
-const int ACUR1 = A1; // current 2
-const int IN1 = 17; // input 1 - high active
-const int IN2 = 16; // input 2- high active
-const int IN3 = 18; // input 1 - high active
-const int IN4 = 19; // input 2- high active
-const int OUT1 = 11;// output 1 - high active
-const int OUT2 = 12;// output 2 - high active
-const int OUT3 = 20;// output 3 - high active
-const int OUT4 = 21;// output 4 - high active
-const int OUT5 = 22;// output 5 - Low active
-const int OUT6 = 23;// output 6 - Low active
-const int OUT7 = 5;// output 7 - Low active
-const int OUT8 = 6;// output 8 - Low active
-const int led = 13;
-const int BMBfault = 11;
+const int ACUR2 = A7; // current 1 (GPIO35)
+const int ACUR1 = A6; // current 2 (GPIO34)
+const int IN1 = 13; // input 1 - high active (GPIO13)
+const int IN2 = 12; // input 2- high active (GPIO12)
+const int IN3 = 14; // input 1 - high active (GPIO14)
+const int IN4 = 27; // input 2- high active (GPIO...)
+const int OUT1 = 26;// output 1 - high active
+const int OUT2 = 25;// output 2 - high active
+const int OUT3 = 33;// output 3 - high active
+const int OUT4 = 32;// output 4 - high active
+const int OUT5 = 19;// output 5 - Low active
+const int OUT6 = 18;// output 6 - Low active
+const int OUT7 = 23;// output 7 - Low active
+const int OUT8 = 2;// output 8 - Low active
+const int led = 21;
+const int CAN_RX = 17; 
+const int CAN_TX = 16;
+const int BMBfault = 22;
 
 byte bmsstatus = 0;
 //bms status values
@@ -96,8 +213,6 @@ byte bmsstatus = 0;
 #define Eltek 3
 #define Elcon 4
 #define HVSBS 5
-#define BYD 6 //testing only
-#define Pylon 7 //testing only
 //
 
 //CSC Variants
@@ -105,6 +220,7 @@ byte bmsstatus = 0;
 #define MiniE 1
 //
 
+void isrCP();
 
 int Discharge;
 int ErrorReason = 0;
@@ -113,7 +229,7 @@ int ErrorReason = 0;
 int pulltime = 100;
 int contctrl, contstat = 0; //1 = out 5 high 2 = out 6 high 3 = both high
 unsigned long conttimer1, conttimer2, conttimer3, Pretimer, Pretimer1, overtriptimer, undertriptimer, mainconttimer, balancetimer = 0;
-uint16_t pwmfreq = 200;//pwm frequency
+uint16_t pwmfreq = 18000;//pwm frequency
 
 int pwmcurmax = 50;//Max current to be shown with pwm
 int pwmcurmid = 50;//Mid point for pwm dutycycle based on current
@@ -130,9 +246,9 @@ uint16_t disvoltage = 42000; // max discharge voltage in mv
 int discurrent = 0;
 int batvcal = 0;
 
-uint16_t SOH = 100; // SOH place holder
+uint16_t SOH = 0; // SOH place holder
 
-unsigned char alarm[4] = {0, 0, 0, 0};
+unsigned char alarmm[4] = {0, 0, 0, 0};
 unsigned char warning[4] = {0, 0, 0, 0};
 unsigned char mes[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 unsigned char bmsname[8] = {'S', 'I', 'M', 'P', ' ', 'B', 'M', 'S'};
@@ -163,7 +279,7 @@ int sensor = 1;
 int SOC = 100; //State of Charge
 int SOCset = 0;
 int SOCtest = 0;
-int SOCmem = 0;
+
 
 ///charger variables
 int maxac1 = 16; //Shore power 16A per charger
@@ -192,7 +308,7 @@ int storagemode = 0;
 int cellspresent = 0;
 int dashused = 1;
 int Charged = 0;
-
+bool balancepauze = 0;
 
 
 //Debugging modes//////////////////
@@ -217,10 +333,6 @@ uint8_t nextmes = 0;
 uint16_t commandrate = 50;
 uint8_t testcycle = 0;
 
-bool balancepauze = 0;
-int balpauzecnt = 0;
-int balstop = 10;
-
 
 //BMW checksum variable///
 
@@ -228,9 +340,7 @@ CRC8 crc8;
 uint8_t checksum;
 const uint8_t finalxor [12] = {0xCF, 0xF5, 0xBB, 0x81, 0x27, 0x1D, 0x53, 0x69, 0x02, 0x38, 0x76, 0x4C};
 
-
-
-ADC *adc = new ADC(); // adc object
+constexpr int ADC_MAX_VAL = 4095;
 
 void loadSettings()
 {
@@ -239,12 +349,12 @@ void loadSettings()
   settings.checksum = 2;
   settings.canSpeed = 500000;
   settings.batteryID = 0x01; //in the future should be 0xFF to force it to ask for an address
-  settings.OverVSetpoint = 4.2f;
+  settings.OverVSetpoint = 4.15f;
   settings.UnderVSetpoint = 3.0f;
   settings.ChargeVsetpoint = 4.1f;
   settings.ChargeHys = 0.2f; // voltage drop required for charger to kick back on
   settings.WarnOff = 0.1f; //voltage offset to raise a warning
-  settings.DischVsetpoint = 3.2f;
+  settings.DischVsetpoint = 3.3f;
   settings.DischHys = 0.2f; // Discharge voltage offset
   settings.CellGap = 0.2f; //max delta between high and low cell
   settings.OverTSetpoint = 65.0f;
@@ -259,13 +369,13 @@ void loadSettings()
   settings.balanceHyst = 0.04f;
   settings.balanceDuty = 60;
   settings.logLevel = 2;
-  settings.CAP = 100; //battery size in Ah
+  settings.CAP = 60; //battery size in Ah
   settings.Pstrings = 1; // strings in parallel used to divide voltage of pack
   settings.Scells = 12;//Cells in series
   settings.StoreVsetpoint = 3.8; // V storage mode charge max
-  settings.discurrentmax = 300; // max discharge current in 0.1A
+  settings.discurrentmax = 200; // max discharge current in 0.1A
   settings.DisTaper = 0.3f; //V offset to bring in discharge taper to Zero Amps at settings.DischVsetpoint
-  settings.chargecurrentmax = 300; //max charge current in 0.1A
+  settings.chargecurrentmax = 200; //max charge current in 0.1A
   settings.chargecurrentend = 50; //end charge current in 0.1A
   settings.socvolt[0] = 3100; //Voltage and SOC curve for voltage based SOC calc
   settings.socvolt[1] = 10; //Voltage and SOC curve for voltage based SOC calc
@@ -275,7 +385,7 @@ void loadSettings()
   settings.cursens = 2;
   settings.curcan = LemCAB300;
   settings.voltsoc = 0; //SOC purely voltage based
-  settings.Pretime = 5000; //ms of precharge time
+  settings.Pretime = 2000; //ms of precharge time
   settings.conthold = 50; //holding duty cycle for contactor 0-255
   settings.Precurrent = 1000; //ma before closing main contator
   settings.convhigh = 58; // mV/A current sensor high range channel
@@ -285,7 +395,7 @@ void loadSettings()
   settings.changecur = 20000;//mA change overpoint
   settings.gaugelow = 50; //empty fuel gauge pwm
   settings.gaugehigh = 255; //full fuel gauge pwm
-  settings.ESSmode = 0; //activate ESS mode
+  settings.ESSmode = 1; //activate ESS mode
   settings.ncur = 1; //number of multiples to use for current measurement
   settings.chargertype = 2; // 1 - Brusa NLG5xx 2 - Volt charger 0 -No Charger
   settings.chargerspd = 100; //ms per message
@@ -297,19 +407,103 @@ void loadSettings()
   settings.TempOff = 0; //Temperature offset
 }
 
-
 CAN_message_t msg;
 CAN_message_t inMsg;
 CAN_filter_t filter;
 
-uint32_t lastUpdate;
+void ESPsendCAN(const CAN_message_t &msg) 
+{
+    CAN_FRAME out;
+    out.rtr = 0;
+    out.extended = msg.flags.extended;
+    out.id = msg.id;
+    out.length = msg.len;
 
+    for (uint8_t i = 0; i < msg.len; ++i)
+    {
+        out.data.uint8[i] = msg.buf[i];
+    }
+
+    CAN0.sendFrame(out);
+}
+
+uint32_t lastUpdate;
 
 void setup()
 {
-  //delay(4000);  //just for easy debugging. It takes a few seconds for USB to come up properly on most OS's
-  //pinMode(ACUR1, INPUT);//Not required for Analogue Pins
-  //pinMode(ACUR2, INPUT);//Not required for Analogue Pins
+  initLittleFS();
+
+  // Load values saved in LittleFS
+  ssid = readFile(LittleFS, ssidPath);
+  pass = readFile(LittleFS, passPath);
+  ip = readFile(LittleFS, ipPath);
+  gateway = readFile (LittleFS, gatewayPath);
+
+  if(initWiFi()) {
+  
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+  request->send_P(200, "text/html", bms.htmlPackDetails(currentact,SOC).c_str());
+  });
+  server.serveStatic("/", LittleFS, "/");
+  AsyncElegantOTA.begin(&server);
+  server.begin();
+  }
+  else {
+    // NULL sets an open Access Point
+    WiFi.softAP("SIMP-ESP32", NULL);
+
+    IPAddress IP = WiFi.softAPIP();
+
+    // Web Server Root URL
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+      request->send(LittleFS, "/wifimanager.html", "text/html");
+    });
+    
+    server.serveStatic("/", LittleFS, "/");
+    
+    server.on("/", HTTP_POST, [](AsyncWebServerRequest *request) {
+      int params = request->params();
+      for(int i=0;i<params;i++){
+        AsyncWebParameter* p = request->getParam(i);
+        if(p->isPost()){
+          // HTTP POST ssid value
+          if (p->name() == PARAM_INPUT_1) {
+            ssid = p->value().c_str();
+            
+            // Write file to save value
+            writeFile(LittleFS, ssidPath, ssid.c_str());
+          }
+          // HTTP POST pass value
+          if (p->name() == PARAM_INPUT_2) {
+            pass = p->value().c_str();
+            Serial.print("Password set to: ");
+            Serial.println(pass);
+            // Write file to save value
+            writeFile(LittleFS, passPath, pass.c_str());
+          }
+          // HTTP POST ip value
+          if (p->name() == PARAM_INPUT_3) {
+            ip = p->value().c_str();
+          
+            // Write file to save value
+            writeFile(LittleFS, ipPath, ip.c_str());
+          }
+          // HTTP POST gateway value
+          if (p->name() == PARAM_INPUT_4) {
+            gateway = p->value().c_str();
+          
+            // Write file to save value
+            writeFile(LittleFS, gatewayPath, gateway.c_str());
+          }
+        }
+      }
+      request->send(200, "text/plain", "Done. ESP will restart, connect to your router and go to IP address: " + ip);
+      delay(3000);
+      ESP.restart();
+    });
+    server.begin();
+  }
+
   pinMode(IN1, INPUT);
   pinMode(IN2, INPUT);
   pinMode(IN3, INPUT);
@@ -324,74 +518,94 @@ void setup()
   pinMode(OUT8, OUTPUT); // pwm driver output
   pinMode(led, OUTPUT);
 
-  analogWriteFrequency(OUT5, pwmfreq);
-  analogWriteFrequency(OUT6, pwmfreq);
-  analogWriteFrequency(OUT7, pwmfreq);
-  analogWriteFrequency(OUT8, pwmfreq);
+  ledcSetup(0, pwmfreq, 8);
+  ledcSetup(1, pwmfreq, 8);
+  ledcSetup(2, pwmfreq, 8);
+  ledcSetup(3, pwmfreq, 8);
+  
+  ledcAttachPin(OUT5, 0);
+  ledcAttachPin(OUT6, 1);
+  ledcAttachPin(OUT7, 2);
+  ledcAttachPin(OUT8, 3);
 
-  Can0.begin(500000);
-
-  //set filters for standard
-  for (int i = 0; i < 8; i++)
-  {
-    Can0.getFilter(filter, i);
-    filter.flags.extended = 0;
-    Can0.setFilter(filter, i);
-  }
-  //set filters for extended
-  for (int i = 9; i < 13; i++)
-  {
-    Can0.getFilter(filter, i);
-    filter.flags.extended = 1;
-    Can0.setFilter(filter, i);
+  CAN0.setCANPins(gpio_num_t(CAN_RX), gpio_num_t(CAN_TX));
+  if (!CAN0.begin(500E3)) {
+    SERIALCONSOLE.println("Starting CAN failed!");
+    while (1);
   }
 
-  //if using enable pins on a transceiver they need to be set on
+CAN0.watchFor();
 
-
-  adc->adc0->setAveraging(16); // set number of averages
-  adc->adc0->setResolution(16); // set bits of resolution
-  adc->adc0->setConversionSpeed(ADC_CONVERSION_SPEED::MED_SPEED);
-  adc->adc0->setSamplingSpeed(ADC_SAMPLING_SPEED::MED_SPEED);
-  adc->adc0->startContinuous(ACUR1);
-
-
+  analogReadResolution(12);
+  analogSetWidth(12);
+  analogSetClockDiv(100);
+  
+  adcAttachPin(ACUR1);
+  adcAttachPin(ACUR2);
+  
   SERIALCONSOLE.begin(115200);
   SERIALCONSOLE.println("Starting up!");
-  SERIALCONSOLE.println("SimpBMS V2 BMW I3");
+  SERIALCONSOLE.println("SimpBMS V2 BMW I3 for ESP32");
 
-  Serial2.begin(115200);
-
-  // Display reason the Teensy was last reset
+// Display reset reason
   Serial.println();
   Serial.println("Reason for last Reset: ");
 
-  if (RCM_SRS1 & RCM_SRS1_SACKERR)   Serial.println("Stop Mode Acknowledge Error Reset");
-  if (RCM_SRS1 & RCM_SRS1_MDM_AP)    Serial.println("MDM-AP Reset");
-  if (RCM_SRS1 & RCM_SRS1_SW)        Serial.println("Software Reset");                   // reboot with SCB_AIRCR = 0x05FA0004
-  if (RCM_SRS1 & RCM_SRS1_LOCKUP)    Serial.println("Core Lockup Event Reset");
-  if (RCM_SRS0 & RCM_SRS0_POR)       Serial.println("Power-on Reset");                   // removed / applied power
-  if (RCM_SRS0 & RCM_SRS0_PIN)       Serial.println("External Pin Reset");               // Reboot with software download
-  if (RCM_SRS0 & RCM_SRS0_WDOG)      Serial.println("Watchdog(COP) Reset");              // WDT timed out
-  if (RCM_SRS0 & RCM_SRS0_LOC)       Serial.println("Loss of External Clock Reset");
-  if (RCM_SRS0 & RCM_SRS0_LOL)       Serial.println("Loss of Lock in PLL Reset");
-  if (RCM_SRS0 & RCM_SRS0_LVD)       Serial.println("Low-voltage Detect Reset");
+  auto CPU1_reason = rtc_get_reset_reason(0);
+  auto CPU2_reason = rtc_get_reset_reason(1);
+
+  Serial.print("CPU1: ");
+  switch ( CPU1_reason)
+  {
+    case 1  : Serial.println ("Vbat power on reset");break;
+    case 3  : Serial.println ("Software reset digital core");break;
+    case 4  : Serial.println ("Legacy watch dog reset digital core");break;
+    case 5  : Serial.println ("Deep Sleep reset digital core");break;
+    case 6  : Serial.println ("Reset by SLC module, reset digital core");break;
+    case 7  : Serial.println ("Timer Group0 Watch dog reset digital core");break;
+    case 8  : Serial.println ("Timer Group1 Watch dog reset digital core");break;
+    case 9  : Serial.println ("RTC Watch dog Reset digital core");break;
+    case 10 : Serial.println ("Instrusion tested to reset CPU");break;
+    case 11 : Serial.println ("Time Group reset CPU");break;
+    case 12 : Serial.println ("Software reset CPU");break;
+    case 13 : Serial.println ("RTC Watch dog Reset CPU");break;
+    case 14 : Serial.println ("for APP CPU, reseted by PRO CPU");break;
+    case 15 : Serial.println ("Reset when the vdd voltage is not stable");break;
+    case 16 : Serial.println ("RTC Watch dog reset digital core and rtc module");break;
+    default : Serial.println ("NO_MEAN");
+  }
+
+Serial.print("CPU2: ");
+    switch ( CPU2_reason)
+  {
+    case 1  : Serial.println ("Vbat power on reset");break;
+    case 3  : Serial.println ("Software reset digital core");break;
+    case 4  : Serial.println ("Legacy watch dog reset digital core");break;
+    case 5  : Serial.println ("Deep Sleep reset digital core");break;
+    case 6  : Serial.println ("Reset by SLC module, reset digital core");break;
+    case 7  : Serial.println ("Timer Group0 Watch dog reset digital core");break;
+    case 8  : Serial.println ("Timer Group1 Watch dog reset digital core");break;
+    case 9  : Serial.println ("RTC Watch dog Reset digital core");break;
+    case 10 : Serial.println ("Instrusion tested to reset CPU");break;
+    case 11 : Serial.println ("Time Group reset CPU");break;
+    case 12 : Serial.println ("Software reset CPU");break;
+    case 13 : Serial.println ("RTC Watch dog Reset CPU");break;
+    case 14 : Serial.println ("for APP CPU, reseted by PRO CPU");break;
+    case 15 : Serial.println ("Reset when the vdd voltage is not stable");break;
+    case 16 : Serial.println ("RTC Watch dog reset digital core and rtc module");break;
+    default : Serial.println ("NO_MEAN");
+  }
+
   Serial.println();
   ///////////////////
 
 
   // enable WDT
-  noInterrupts();                                         // don't allow interrupts while setting up WDOG
-  WDOG_UNLOCK = WDOG_UNLOCK_SEQ1;                         // unlock access to WDOG registers
-  WDOG_UNLOCK = WDOG_UNLOCK_SEQ2;
-  delayMicroseconds(1);                                   // Need to wait a bit..
-
-  WDOG_TOVALH = 0x1000;
-  WDOG_TOVALL = 0x0000;
-  WDOG_PRESC  = 0;
-  WDOG_STCTRLH |= WDOG_STCTRLH_ALLOWUPDATE |
-                  WDOG_STCTRLH_WDOGEN | WDOG_STCTRLH_WAITEN |
-                  WDOG_STCTRLH_STOPEN | WDOG_STCTRLH_CLKSRC;
+  noInterrupts(); // don't allow interrupts while setting up WDOG
+  esp_task_wdt_init(3, true); //enable panic so ESP32 restarts after 3 sec
+  esp_task_wdt_add(NULL); //add current thread to WDT watch
+  esp_task_wdt_reset(); // reset timer
+  delay(10);
   interrupts();
   /////////////////
 
@@ -412,30 +626,12 @@ void setup()
   Logger::setLoglevel(Logger::Off); //Debug = 0, Info = 1, Warn = 2, Error = 3, Off = 4
 
   lastUpdate = 0;
-
+ 
   crc8.begin();
   digitalWrite(led, HIGH);
   bms.setPstrings(settings.Pstrings);
   bms.setSensors(settings.IgnoreTemp, settings.IgnoreVolt, settings.TempOff);
 
-  //SOC recovery//
-
-  SOC = (EEPROM.read(1000));
-  if (settings.voltsoc == 1)
-  {
-    SOCmem = 0;
-  }
-  else
-  {
-    if (SOC > 100)
-    {
-      SOCmem = 0;
-    }
-    else
-    {
-      SOCmem = 1;
-    }
-  }
   ////Calculate fixed numbers
   pwmcurmin = (pwmcurmid / 50 * pwmcurmax * -1);
   ////
@@ -452,7 +648,9 @@ void setup()
 
 void loop()
 {
-  while (Can0.available())
+
+  while(CAN0.available())
+  
   {
     canread();
   }
@@ -531,7 +729,7 @@ void loop()
 
         if (storagemode == 1)
         {
-          if (bms.getHighCellVolt() > settings.StoreVsetpoint || chargecurrent == 0)
+          if (bms.getHighCellVolt() > settings.StoreVsetpoint)
           {
             digitalWrite(OUT3, LOW);//turn off charger
             // contctrl = contctrl & 253;
@@ -571,7 +769,7 @@ void loop()
         }
         else
         {
-          if (bms.getHighCellVolt() > settings.OverVSetpoint || bms.getHighCellVolt() > settings.ChargeVsetpoint || chargecurrent == 0)
+          if (bms.getHighCellVolt() > settings.OverVSetpoint || bms.getHighCellVolt() > settings.ChargeVsetpoint)
           {
             if ((millis() - overtriptimer) > settings.triptime)
             {
@@ -694,7 +892,6 @@ void loop()
               ErrorReason = 5;
             }
           }
-
         }
       }
       else
@@ -865,12 +1062,12 @@ void loop()
       getcurrent();
     }
   }
+  
   if (millis() - commandtime > commandrate)
   {
     commandtime = millis();
     sendcommand();
   }
-
 
   if (millis() - looptime > 500)
   {
@@ -973,21 +1170,20 @@ void loop()
     {
       dashupdate();
     }
-    /*
-        ///stop reading voltages during balancing//
-        if ((settings.balanceDuty + 5) > ((balancetimer - millis()) * 0.001))
-        {
-          bms.setBalIgnore(true);
 
-            Serial.println();
-            Serial.println("Ignore Voltages Balancing Active");
-
-        }
-        else
-        {
-          bms.setBalIgnore(false);
-        }
-    */
+    ///stop reading voltages during balancing//
+    if ((settings.balanceDuty + 5) > ((balancetimer - millis()) * 0.001))
+    {
+      bms.setBalIgnore(true);
+      /*
+        Serial.println();
+        Serial.println("Ignore Voltages Balancing Active");
+      */
+    }
+    else
+    {
+      bms.setBalIgnore(false);
+    }
 
     resetwdog();
   }
@@ -1057,28 +1253,28 @@ void loop()
 
 void alarmupdate()
 {
-  alarm[0] = 0x00;
+  alarmm[0] = 0x00;
   if (settings.OverVSetpoint < bms.getHighCellVolt())
   {
-    alarm[0] = 0x04;
+    alarmm[0] = 0x04;
   }
   if (bms.getLowCellVolt() < settings.UnderVSetpoint)
   {
-    alarm[0] |= 0x10;
+    alarmm[0] |= 0x10;
   }
   if (bms.getHighTemperature() > settings.OverTSetpoint)
   {
-    alarm[0] |= 0x40;
+    alarmm[0] |= 0x40;
   }
-  alarm[1] = 0;
+  alarmm[1] = 0;
   if (bms.getLowTemperature() < settings.UnderTSetpoint)
   {
-    alarm[1] = 0x01;
+    alarmm[1] = 0x01;
   }
-  alarm[3] = 0;
+  alarmm[3] = 0;
   if ((bms.getHighCellVolt() - bms.getLowCellVolt()) > settings.CellGap)
   {
-    alarm[3] = 0x01;
+    alarmm[3] = 0x01;
   }
 
   ///warnings///
@@ -1113,7 +1309,7 @@ void gaugeupdate()
     {
       SOCtest = 0;
     }
-    analogWrite(OUT8, map(SOCtest * 0.1, 0, 100, settings.gaugelow, settings.gaugehigh));
+    ledcWrite(OUT8, map(SOCtest * 0.1, 0, 100, settings.gaugelow, settings.gaugehigh));
 
     SERIALCONSOLE.println("  ");
     SERIALCONSOLE.print("SOC : ");
@@ -1124,7 +1320,7 @@ void gaugeupdate()
   }
   else
   {
-    analogWrite(OUT8, map(SOC, 0, 100, settings.gaugelow, settings.gaugehigh));
+    ledcWrite(OUT8, map(SOC, 0, 100, settings.gaugelow, settings.gaugehigh));
   }
 }
 
@@ -1234,8 +1430,6 @@ void printbmsstat()
     //SERIALCONSOLE.print("| Counter: ");
     SERIALCONSOLE.print((balancetimer - millis()) * 0.001, 0);
     SERIALCONSOLE.print("|");
-    SERIALCONSOLE.print(balpauzecnt);
-    SERIALCONSOLE.print("|");
   }
   SERIALCONSOLE.print("  ");
   SERIALCONSOLE.print(cellspresent);
@@ -1323,18 +1517,18 @@ void getcurrent()
       if (currentact < settings.changecur && currentact > (settings.changecur * -1))
       {
         sensor = 1;
-        adc->startContinuous(ACUR1, ADC_0);
+        analogRead(ACUR1);
       }
       else
       {
         sensor = 2;
-        adc->startContinuous(ACUR2, ADC_0);
+        analogRead(ACUR2);
       }
     }
     else
     {
       sensor = 1;
-      adc->startContinuous(ACUR1, ADC_0);
+        analogRead(ACUR1);
     }
     if (sensor == 1)
     {
@@ -1351,23 +1545,25 @@ void getcurrent()
         }
         SERIALCONSOLE.print("Value ADC0: ");
       }
-      value = (uint16_t)adc->adc0->analogReadContinuous(); // the unsigned is necessary for 16 bits, otherwise values larger than 3.3/2 V are negative!
+      
+      value = analogRead(ACUR1);
+
       if (debugCur != 0)
       {
-        SERIALCONSOLE.print(value * 3300 / adc->adc0->getMaxValue()); //- settings.offset1)
+        SERIALCONSOLE.print(value * 3300 / ADC_MAX_VAL); //- settings.offset1)
         SERIALCONSOLE.print(" ");
         SERIALCONSOLE.print(settings.offset1);
       }
-      RawCur = int16_t((value * 3300 / adc->adc0->getMaxValue()) - settings.offset1) / (settings.convlow * 0.0001);
-
-      if (abs((int16_t(value * 3300 / adc->adc0->getMaxValue()) - settings.offset1)) <  settings.CurDead)
+      RawCur = int16_t((value * 3300 / ADC_MAX_VAL) - settings.offset1) / (settings.convlow * 0.0001);
+      
+      if (abs((int16_t(value * 3300 / ADC_MAX_VAL) - settings.offset1)) <  settings.CurDead)
       {
         RawCur = 0;
       }
       if (debugCur != 0)
       {
         SERIALCONSOLE.print("  ");
-        SERIALCONSOLE.print(int16_t(value * 3300 / adc->adc0->getMaxValue()) - settings.offset1);
+        SERIALCONSOLE.print(int16_t(value * 3300 / ADC_MAX_VAL) - settings.offset1);
         SERIALCONSOLE.print("  ");
         SERIALCONSOLE.print(RawCur);
         SERIALCONSOLE.print(" mA");
@@ -1382,22 +1578,24 @@ void getcurrent()
         SERIALCONSOLE.print("High Range: ");
         SERIALCONSOLE.print("Value ADC0: ");
       }
-      value = (uint16_t)adc->adc0->analogReadContinuous(); // the unsigned is necessary for 16 bits, otherwise values larger than 3.3/2 V are negative!
+    
+      value = analogRead(ACUR1); // the unsigned is necessary for 16 bits, otherwise values larger than 3.3/2 V are negative!
+    
       if (debugCur != 0)
       {
-        SERIALCONSOLE.print(value * 3300 / adc->adc0->getMaxValue() );//- settings.offset2)
+        SERIALCONSOLE.print(value * 3300 / ADC_MAX_VAL);//- settings.offset2)
         SERIALCONSOLE.print("  ");
         SERIALCONSOLE.print(settings.offset2);
       }
-      RawCur = int16_t((value * 3300 / adc->adc0->getMaxValue()) - settings.offset2) / (settings.convhigh * 0.0001);
-      if (value < 100 || value > (adc->adc0->getMaxValue() - 100))
+      RawCur = int16_t((value * 3300 / ADC_MAX_VAL) - settings.offset2) / (settings.convhigh * 0.0001);
+      if (value < 100 || value > (ADC_MAX_VAL - 100))
       {
         RawCur = 0;
       }
       if (debugCur != 0)
       {
         SERIALCONSOLE.print("  ");
-        SERIALCONSOLE.print((float(value * 3300 / adc->adc0->getMaxValue()) - settings.offset2));
+        SERIALCONSOLE.print((float(value * 3300 / ADC_MAX_VAL) - settings.offset2));
         SERIALCONSOLE.print("  ");
         SERIALCONSOLE.print(RawCur);
         SERIALCONSOLE.print("mA");
@@ -1463,7 +1661,7 @@ void getcurrent()
 
 void updateSOC()
 {
-  if (SOCset == 0&& SOCmem == 0)
+  if (SOCset == 0)
   {
     if (millis() > 9000)
     {
@@ -1471,7 +1669,7 @@ void updateSOC()
     }
     if (millis() > 10000)
     {
-      SOC = map(uint16_t(bms.getLowCellVolt() * 1000), settings.socvolt[0], settings.socvolt[2], settings.socvolt[1], settings.socvolt[3]);
+      SOC = map(uint16_t(bms.getAvgCellVolt() * 1000), settings.socvolt[0], settings.socvolt[2], settings.socvolt[1], settings.socvolt[3]);
 
       ampsecond = (SOC * settings.CAP * settings.Pstrings * 10) / 0.27777777777778 ;
       SOCset = 1;
@@ -1492,7 +1690,7 @@ void updateSOC()
   */
   if (settings.voltsoc == 1)
   {
-    SOC = map(uint16_t(bms.getLowCellVolt() * 1000), settings.socvolt[0], settings.socvolt[2], settings.socvolt[1], settings.socvolt[3]);
+    SOC = map(uint16_t(bms.getAvgCellVolt() * 1000), settings.socvolt[0], settings.socvolt[2], settings.socvolt[1], settings.socvolt[3]);
 
     ampsecond = (SOC * settings.CAP * settings.Pstrings * 10) / 0.27777777777778 ;
   }
@@ -1604,17 +1802,17 @@ void contcon()
   {
     if ((contctrl & 1) == 0)
     {
-      analogWrite(OUT5, 0);
+      ledcWrite(OUT5, 0);
       contstat = contstat & 254;
     }
     if ((contctrl & 2) == 0)
     {
-      analogWrite(OUT6, 0);
+      ledcWrite(OUT6, 0);
       contstat = contstat & 253;
     }
     if ((contctrl & 4) == 0)
     {
-      analogWrite(OUT7, 0);
+      ledcWrite(OUT7, 0);
       contstat = contstat & 251;
     }
 
@@ -1625,12 +1823,12 @@ void contcon()
       {
         if (conttimer1 == 0)
         {
-          analogWrite(OUT5, 255);
+          ledcWrite(OUT5, 255);
           conttimer1 = millis() + pulltime ;
         }
         if (conttimer1 < millis())
         {
-          analogWrite(OUT5, settings.conthold);
+          ledcWrite(OUT5, settings.conthold);
           contstat = contstat | 1;
           conttimer1 = 0;
         }
@@ -1645,12 +1843,12 @@ void contcon()
         {
           Serial.println();
           Serial.println("pull in OUT6");
-          analogWrite(OUT6, 255);
+          ledcWrite(OUT6, 255);
           conttimer2 = millis() + pulltime ;
         }
         if (conttimer2 < millis())
         {
-          analogWrite(OUT6, settings.conthold);
+          ledcWrite(OUT6, settings.conthold);
           contstat = contstat | 2;
           conttimer2 = 0;
         }
@@ -1664,12 +1862,12 @@ void contcon()
         {
           Serial.println();
           Serial.println("pull in OUT7");
-          analogWrite(OUT7, 255);
+          ledcWrite(OUT7, 255);
           conttimer3 = millis() + pulltime ;
         }
         if (conttimer3 < millis())
         {
-          analogWrite(OUT7, settings.conthold);
+          ledcWrite(OUT7, settings.conthold);
           contstat = contstat | 4;
           conttimer3 = 0;
         }
@@ -1687,20 +1885,19 @@ void contcon()
   }
   if (contctrl == 0)
   {
-    analogWrite(OUT5, 0);
-    analogWrite(OUT6, 0);
+    ledcWrite(OUT5, 0);
+    ledcWrite(OUT6, 0);
   }
 }
 
 void calcur()
 {
-  adc->adc0->startContinuous(ACUR1);
   sensor = 1;
   x = 0;
   SERIALCONSOLE.print(" Calibrating Current Offset ::::: ");
   while (x < 20)
   {
-    settings.offset1 = settings.offset1 + ((uint16_t)adc->adc0->analogReadContinuous() * 3300 / adc->adc0->getMaxValue());
+    settings.offset1 = settings.offset1 + (analogRead(ACUR1) * 3300 / ADC_MAX_VAL);
     SERIALCONSOLE.print(".");
     delay(100);
     x++;
@@ -1710,12 +1907,11 @@ void calcur()
   SERIALCONSOLE.print(" current offset 1 calibrated ");
   SERIALCONSOLE.println("  ");
   x = 0;
-  adc->startContinuous(ACUR2, ADC_0);
   sensor = 2;
   SERIALCONSOLE.print(" Calibrating Current Offset ::::: ");
   while (x < 20)
   {
-    settings.offset2 = settings.offset2 + ((uint16_t)adc->adc0->analogReadContinuous() * 3300 / adc->adc0->getMaxValue());
+    settings.offset2 = settings.offset2 + (analogRead(ACUR2) * 3300 / ADC_MAX_VAL);
     SERIALCONSOLE.print(".");
     delay(100);
     x++;
@@ -1728,241 +1924,163 @@ void calcur()
 
 void VEcan() //communication with Victron system over CAN
 {
-  if (settings.chargertype == BYD || settings.chargertype == Pylon)
+  if (settings.chargertype == 6)
   {
-    if (settings.chargertype == Pylon)
+    msg.id  = 0x618;
+    msg.len = 8;
+    msg.buf[0] = 0x00;
+    msg.buf[1] = 'B';
+    msg.buf[2] = 'Y';
+    msg.buf[3] = 'D';
+    msg.buf[4] = 0x00;
+    msg.buf[5] = 0x00;
+    msg.buf[6] = 0x00;
+    msg.buf[7] = 0x00;
+    
+    ESPsendCAN(msg);
+  
+    delay(2);
+    msg.id  = 0x5D8;
+    msg.len = 8;
+    msg.buf[0] = 0x00;
+    msg.buf[1] = 'B';
+    msg.buf[2] = 'Y';
+    msg.buf[3] = 'D';
+    msg.buf[4] = 0x00;
+    msg.buf[5] = 0x00;
+    msg.buf[6] = 0x00;
+    msg.buf[7] = 0x00;
+    ESPsendCAN(msg);
+    
+
+    delay(2);
+
+    msg.id  = 0x558;
+    msg.len = 8;
+    msg.buf[0] = 0x03;
+    msg.buf[1] = 0x12;
+    msg.buf[2] = 0x00;
+    msg.buf[3] = 0x04;
+    msg.buf[4] = highByte(settings.CAP * settings.Pstrings * 37 * settings.Scells);
+    msg.buf[5] = lowByte(settings.CAP * settings.Pstrings * 37 * settings.Scells);
+    msg.buf[6] = 0x05;
+    msg.buf[7] = 0x07;
+    ESPsendCAN(msg);
+    
+
+    delay(2);
+
+    msg.id  = 0x598;
+    msg.len = 8;
+    msg.buf[0] = 0x00;
+    msg.buf[1] = 0x00;
+    msg.buf[2] = 0x12;
+    msg.buf[3] = 0x34;
+    msg.buf[4] = 0x00;
+    msg.buf[5] = 0x00;
+    msg.buf[6] = 0x04;
+    msg.buf[7] = 0x4F;
+    ESPsendCAN(msg);
+    
+
+    delay(2);
+
+    msg.id  = 0x358;
+    msg.len = 8;
+    if (storagemode == 0)
     {
-      msg.id  = 0x359;
-      msg.len = 8;
-      msg.buf[0] = 0x00; //protection to be translated later date
-      msg.buf[1] = 0x00; //protection to be translated later date
-      msg.buf[2] = 0x00; //protection to be translated later date
-      msg.buf[3] = 0x00; //protection to be translated later date
-      msg.buf[4] = 0x01; //number of modules fixed for now
-      msg.buf[5] = 0x50;
-      msg.buf[6] = 0x4E;
-      msg.buf[7] = 0x00;
-      Can0.write(msg);
-
-      delay(2);
-
-      msg.id  = 0x351;
-      msg.len = 8;
-      if (storagemode == 0)
-      {
-        msg.buf[0] = lowByte(uint16_t((settings.ChargeVsetpoint * settings.Scells ) * 10));
-        msg.buf[1] = highByte(uint16_t((settings.ChargeVsetpoint * settings.Scells ) * 10));
-      }
-      else
-      {
-        msg.buf[0] = lowByte(uint16_t((settings.StoreVsetpoint * settings.Scells ) * 10));
-        msg.buf[1] = highByte(uint16_t((settings.StoreVsetpoint * settings.Scells ) * 10));
-      }
-      msg.buf[2] = lowByte(chargecurrent);
-      msg.buf[3] = highByte(chargecurrent);
-      msg.buf[4] = lowByte(discurrent );
-      msg.buf[5] = highByte(discurrent);
-      msg.buf[6] = 0x00;
-      msg.buf[7] = 0x00;
-      Can0.write(msg);
-
-      delay(2);
-
-      msg.id  = 0x355;
-      msg.len = 8;
-      msg.buf[0] = lowByte(SOC);
-      msg.buf[1] = highByte(SOC);
-      msg.buf[2] = lowByte(SOH) ;//static for now
-      msg.buf[3] = highByte(SOH); //static for now
-      msg.buf[4] = 0x00;
-      msg.buf[5] = 0x00;
-      msg.buf[6] = 0x00;
-      msg.buf[7] = 0x00;
-      Can0.write(msg);
-
-      delay(2);
-
-      msg.id  = 0x356;
-      msg.len = 8;
-      msg.buf[0] = lowByte(uint16_t(bms.getPackVoltage() * 100));
-      msg.buf[1] = highByte(uint16_t(bms.getPackVoltage() * 100));
-      msg.buf[2] = lowByte(long(currentact / 100));
-      msg.buf[3] = highByte(long(currentact / 100));
-      msg.buf[4] = lowByte(int16_t(bms.getAvgTemperature() * 10));
-      msg.buf[5] = highByte(int16_t(bms.getAvgTemperature() * 10));
-      msg.buf[6] = 0;
-      msg.buf[7] = 0;
-      Can0.write(msg);
-
-
-      delay(2);
-
-      msg.id  = 0x35C;
-      msg.len = 2;
-      msg.buf[0] = 0xC0; //fixed charge and discharge enable for verifcation
-      msg.buf[1] = 0x00;
-      Can0.write(msg);
-
-      delay(2);
-
-      msg.id  = 0x35E;
-      msg.len = 2;
-      msg.buf[0] = "T"; //No idea how the naming works
-      msg.buf[1] = "P"; //No idea how the naming works
-      Can0.write(msg);
+      msg.buf[0] = highByte(uint16_t((settings.ChargeVsetpoint * settings.Scells ) * 10));
+      msg.buf[1] = lowByte(uint16_t((settings.ChargeVsetpoint * settings.Scells ) * 10));
     }
-
-
-
-    if (settings.chargertype == BYD)
+    else
     {
-      msg.id  = 0x618;
-      msg.len = 8;
-      msg.buf[0] = 0x00;
-      msg.buf[1] = 'B';
-      msg.buf[2] = 'Y';
-      msg.buf[3] = 'D';
-      msg.buf[4] = 0x00;
-      msg.buf[5] = 0x00;
-      msg.buf[6] = 0x00;
-      msg.buf[7] = 0x00;
-      Can0.write(msg);
-
-      delay(2);
-      msg.id  = 0x5D8;
-      msg.len = 8;
-      msg.buf[0] = 0x00;
-      msg.buf[1] = 'B';
-      msg.buf[2] = 'Y';
-      msg.buf[3] = 'D';
-      msg.buf[4] = 0x00;
-      msg.buf[5] = 0x00;
-      msg.buf[6] = 0x00;
-      msg.buf[7] = 0x00;
-      Can0.write(msg);
-
-      delay(2);
-
-      msg.id  = 0x558;
-      msg.len = 8;
-      msg.buf[0] = 0x03;
-      msg.buf[1] = 0x12;
-      msg.buf[2] = 0x00;
-      msg.buf[3] = 0x04;
-      msg.buf[4] = highByte(settings.CAP * settings.Pstrings * 37 * settings.Scells);
-      msg.buf[5] = lowByte(settings.CAP * settings.Pstrings * 37 * settings.Scells);
-      msg.buf[6] = 0x05;
-      msg.buf[7] = 0x07;
-      Can0.write(msg);
-
-      delay(2);
-
-      msg.id  = 0x598;
-      msg.len = 8;
-      msg.buf[0] = 0x00;
-      msg.buf[1] = 0x00;
-      msg.buf[2] = 0x12;
-      msg.buf[3] = 0x34;
-      msg.buf[4] = 0x00;
-      msg.buf[5] = 0x00;
-      msg.buf[6] = 0x04;
-      msg.buf[7] = 0x4F;
-      Can0.write(msg);
-
-      delay(2);
-
-      msg.id  = 0x358;
-      msg.len = 8;
-      if (storagemode == 0)
-      {
-        msg.buf[0] = highByte(uint16_t((settings.ChargeVsetpoint * settings.Scells ) * 10));
-        msg.buf[1] = lowByte(uint16_t((settings.ChargeVsetpoint * settings.Scells ) * 10));
-      }
-      else
-      {
-        msg.buf[0] = highByte(uint16_t((settings.StoreVsetpoint * settings.Scells ) * 10));
-        msg.buf[1] = lowByte(uint16_t((settings.StoreVsetpoint * settings.Scells ) * 10));
-
-      }
-      msg.buf[2] = highByte(uint16_t((settings.DischVsetpoint * settings.Scells) * 10));
-      msg.buf[3] = lowByte(uint16_t((settings.DischVsetpoint * settings.Scells) * 10));
-      msg.buf[4] = highByte(discurrent );
-      msg.buf[5] = lowByte(discurrent);
-      msg.buf[6] = highByte(chargecurrent);
-      msg.buf[7] = lowByte(chargecurrent);
-      Can0.write(msg);
-
-      delay(2);
-
-      msg.id  = 0x3D8;
-      msg.len = 8;
-      msg.buf[0] = highByte(SOC * 100);
-      msg.buf[1] = lowByte(SOC * 100);
-      msg.buf[2] = highByte(SOH);
-      msg.buf[3] = lowByte(SOH);
-      msg.buf[4] = highByte(uint16_t(ampsecond * 0.002777778));
-      msg.buf[5] = lowByte(uint16_t(ampsecond * 0.002777778));
-      msg.buf[6] = 0xF9;
-      msg.buf[7] = 0;
-      Can0.write(msg);
-
-      delay(2);
-
-      msg.id  = 0x458;
-      msg.len = 8;
-      msg.buf[0] = 0x00;
-      msg.buf[1] = 0x00;
-      msg.buf[2] = 0x12;
-      msg.buf[3] = 0x34;
-      msg.buf[4] = 0x00;
-      msg.buf[5] = 0x00;
-      msg.buf[6] = 0x56;
-      msg.buf[7] = 0x78;
-      Can0.write(msg);
-
-      delay(2);
-
-      msg.id  = 0x518;
-      msg.len = 8;
-      msg.buf[0] = highByte(uint16_t(bms.getHighTemperature() * 10));
-      msg.buf[1] = lowByte(uint16_t(bms.getHighTemperature() * 10));
-      msg.buf[2] = highByte(uint16_t(bms.getLowTemperature() * 10));
-      msg.buf[3] = lowByte(uint16_t(bms.getLowTemperature() * 10));
-      msg.buf[4] = 0xFF;
-      msg.buf[5] = 0xFF;
-      msg.buf[6] = 0xFF;
-      msg.buf[7] = 0xFF;
-
-      Can0.write(msg);
-
-      delay(2);
-
-      msg.id  = 0x4D8;
-      msg.len = 8;
-      msg.buf[0] = highByte(uint16_t(bms.getPackVoltage() * 10));
-      msg.buf[1] = lowByte(uint16_t(bms.getPackVoltage() * 10));
-      msg.buf[2] = highByte(long(currentact / 100));
-      msg.buf[3] = lowByte(long(currentact / 100));
-      msg.buf[4] = highByte(int16_t(bms.getAvgTemperature() * 10));
-      msg.buf[5] = lowByte(int16_t(bms.getAvgTemperature() * 10));
-      msg.buf[6] = 0x03;
-      msg.buf[7] = 0x08;
-      Can0.write(msg);
-
-      delay(2);
-      msg.id  = 0x158;
-      msg.len = 8;
-      msg.buf[0] = alarm[0];//High temp  Low Voltage | High Voltage
-      msg.buf[1] = alarm[1]; // High Discharge Current | Low Temperature
-      msg.buf[2] = alarm[2]; //Internal Failure | High Charge current
-      msg.buf[3] = alarm[3];// Cell Imbalance
-      msg.buf[4] = warning[0];//High temp  Low Voltage | High Voltage
-      msg.buf[5] = warning[1];// High Discharge Current | Low Temperature
-      msg.buf[6] = warning[2];//Internal Failure | High Charge current
-      msg.buf[7] = warning[3];// Cell Imbalance
-      Can0.write(msg);
+      msg.buf[0] = highByte(uint16_t((settings.StoreVsetpoint * settings.Scells ) * 10));
+      msg.buf[1] = lowByte(uint16_t((settings.StoreVsetpoint * settings.Scells ) * 10));
 
     }
+    msg.buf[2] = highByte(uint16_t((settings.DischVsetpoint * settings.Scells) * 10));
+    msg.buf[3] = lowByte(uint16_t((settings.DischVsetpoint * settings.Scells) * 10));
+    msg.buf[4] = highByte(discurrent );
+    msg.buf[5] = lowByte(discurrent);
+    msg.buf[6] = highByte(chargecurrent);
+    msg.buf[7] = lowByte(chargecurrent);
+    ESPsendCAN(msg);
+
+
+    delay(2);
+
+    msg.id  = 0x3D8;
+    msg.len = 8;
+    msg.buf[0] = highByte(SOC * 100);
+    msg.buf[1] = lowByte(SOC * 100);
+    msg.buf[2] = highByte(SOH);
+    msg.buf[3] = lowByte(SOH);
+    msg.buf[4] = highByte(uint16_t(ampsecond * 0.002777778));
+    msg.buf[5] = lowByte(uint16_t(ampsecond * 0.002777778));
+    msg.buf[6] = 0xF9;
+    msg.buf[7] = 0;
+    ESPsendCAN(msg);
+    
+
+    delay(2);
+
+    msg.id  = 0x458;
+    msg.len = 8;
+    msg.buf[0] = 0x00;
+    msg.buf[1] = 0x00;
+    msg.buf[2] = 0x12;
+    msg.buf[3] = 0x34;
+    msg.buf[4] = 0x00;
+    msg.buf[5] = 0x00;
+    msg.buf[6] = 0x56;
+    msg.buf[7] = 0x78;
+    ESPsendCAN(msg);
+    
+
+    delay(2);
+
+    msg.id  = 0x518;
+    msg.len = 8;
+    msg.buf[0] = highByte(uint16_t(bms.getHighTemperature() * 10));
+    msg.buf[1] = lowByte(uint16_t(bms.getHighTemperature() * 10));
+    msg.buf[2] = highByte(uint16_t(bms.getLowTemperature() * 10));
+    msg.buf[3] = lowByte(uint16_t(bms.getLowTemperature() * 10));
+    msg.buf[4] = 0xFF;
+    msg.buf[5] = 0xFF;
+    msg.buf[6] = 0xFF;
+    msg.buf[7] = 0xFF;
+    ESPsendCAN(msg);
+    
+
+    delay(2);
+
+    msg.id  = 0x4D8;
+    msg.len = 8;
+    msg.buf[0] = highByte(uint16_t(bms.getPackVoltage() * 10));
+    msg.buf[1] = lowByte(uint16_t(bms.getPackVoltage() * 10));
+    msg.buf[2] = highByte(long(currentact / 100));
+    msg.buf[3] = lowByte(long(currentact / 100));
+    msg.buf[4] = highByte(int16_t(bms.getAvgTemperature() * 10));
+    msg.buf[5] = lowByte(int16_t(bms.getAvgTemperature() * 10));
+    msg.buf[6] = 0x03;
+    msg.buf[7] = 0x08;
+    ESPsendCAN(msg);
+    
+
+    delay(2);
+    msg.id  = 0x158;
+    msg.len = 8;
+    msg.buf[0] = alarmm[0];//High temp  Low Voltage | High Voltage
+    msg.buf[1] = alarmm[1]; // High Discharge Current | Low Temperature
+    msg.buf[2] = alarmm[2]; //Internal Failure | High Charge current
+    msg.buf[3] = alarmm[3];// Cell Imbalance
+    msg.buf[4] = warning[0];//High temp  Low Voltage | High Voltage
+    msg.buf[5] = warning[1];// High Discharge Current | Low Temperature
+    msg.buf[6] = warning[2];//Internal Failure | High Charge current
+    msg.buf[7] = warning[3];// Cell Imbalance
+    ESPsendCAN(msg);
+    
+
   }
   else
   {
@@ -1984,7 +2102,8 @@ void VEcan() //communication with Victron system over CAN
     msg.buf[5] = highByte(discurrent);
     msg.buf[6] = lowByte(uint16_t((settings.DischVsetpoint * settings.Scells) * 10));
     msg.buf[7] = highByte(uint16_t((settings.DischVsetpoint * settings.Scells) * 10));
-    Can0.write(msg);
+    ESPsendCAN(msg);
+    
 
     msg.id  = 0x355;
     msg.len = 8;
@@ -1996,7 +2115,8 @@ void VEcan() //communication with Victron system over CAN
     msg.buf[5] = highByte(SOC * 10);
     msg.buf[6] = 0;
     msg.buf[7] = 0;
-    Can0.write(msg);
+    ESPsendCAN(msg);
+    
 
     msg.id  = 0x356;
     msg.len = 8;
@@ -2008,20 +2128,22 @@ void VEcan() //communication with Victron system over CAN
     msg.buf[5] = highByte(int16_t(bms.getAvgTemperature() * 10));
     msg.buf[6] = 0;
     msg.buf[7] = 0;
-    Can0.write(msg);
+    ESPsendCAN(msg);
+    
 
     delay(2);
     msg.id  = 0x35A;
     msg.len = 8;
-    msg.buf[0] = alarm[0];//High temp  Low Voltage | High Voltage
-    msg.buf[1] = alarm[1]; // High Discharge Current | Low Temperature
-    msg.buf[2] = alarm[2]; //Internal Failure | High Charge current
-    msg.buf[3] = alarm[3];// Cell Imbalance
+    msg.buf[0] = alarmm[0];//High temp  Low Voltage | High Voltage
+    msg.buf[1] = alarmm[1]; // High Discharge Current | Low Temperature
+    msg.buf[2] = alarmm[2]; //Internal Failure | High Charge current
+    msg.buf[3] = alarmm[3];// Cell Imbalance
     msg.buf[4] = warning[0];//High temp  Low Voltage | High Voltage
     msg.buf[5] = warning[1];// High Discharge Current | Low Temperature
     msg.buf[6] = warning[2];//Internal Failure | High Charge current
     msg.buf[7] = warning[3];// Cell Imbalance
-    Can0.write(msg);
+    ESPsendCAN(msg);
+    
 
     msg.id  = 0x35E;
     msg.len = 8;
@@ -2033,7 +2155,8 @@ void VEcan() //communication with Victron system over CAN
     msg.buf[5] = bmsname[5];
     msg.buf[6] = bmsname[6];
     msg.buf[7] = bmsname[7];
-    Can0.write(msg);
+    ESPsendCAN(msg);
+    
 
     delay(2);
     msg.id  = 0x370;
@@ -2046,7 +2169,8 @@ void VEcan() //communication with Victron system over CAN
     msg.buf[5] = bmsmanu[5];
     msg.buf[6] = bmsmanu[6];
     msg.buf[7] = bmsmanu[7];
-    Can0.write(msg);
+    ESPsendCAN(msg);
+    
 
     if (balancecells == 1)
     {
@@ -2070,7 +2194,8 @@ void VEcan() //communication with Victron system over CAN
         msg.buf[5] =  0x00;
         msg.buf[6] =  0x00;
         msg.buf[7] = 0x00;
-        Can0.write(msg);
+        ESPsendCAN(msg);
+        
       }
     }
 
@@ -2085,7 +2210,8 @@ void VEcan() //communication with Victron system over CAN
     msg.buf[5] = highByte(uint16_t(bms.getLowTemperature() + 273.15));
     msg.buf[6] = lowByte(uint16_t(bms.getHighTemperature() + 273.15));
     msg.buf[7] = highByte(uint16_t(bms.getHighTemperature() + 273.15));
-    Can0.write(msg);
+    ESPsendCAN(msg);
+    
 
     delay(2);
     msg.id  = 0x379; //Installed capacity
@@ -2118,7 +2244,8 @@ void VEcan() //communication with Victron system over CAN
     msg.buf[5] = 0x00;
     msg.buf[6] = 0x00;
     msg.buf[7] = 0x00;
-    Can0.write(msg);
+    ESPsendCAN(msg);
+    
 
   }
 }
@@ -2594,7 +2721,7 @@ void menu()
 
       case '5': //1 Over Voltage Setpoint
         settings.chargertype = settings.chargertype + 1;
-        if (settings.chargertype > 7)
+        if (settings.chargertype > 6)
         {
           settings.chargertype = 0;
         }
@@ -3011,10 +3138,7 @@ void menu()
             SERIALCONSOLE.print("Victron/SMA");
             break;
           case 6:
-            SERIALCONSOLE.print("HV SBS - TESTING ONLY");
-            break;
-          case 7:
-            SERIALCONSOLE.print("Pylon - TESTING ONLY");
+            SERIALCONSOLE.print("HV SBS");
             break;
         }
         SERIALCONSOLE.println();
@@ -3377,7 +3501,23 @@ void menu()
 
 void canread()
 {
-  Can0.read(inMsg);
+    CAN_FRAME can_in;
+
+    if (!CAN0.read(can_in))
+    {
+        SERIALCONSOLE.println("Error during read CAN frame.");
+    }
+
+    inMsg = {};
+    inMsg.id = can_in.id;
+    inMsg.len = can_in.length;
+    inMsg.flags.extended = can_in.extended;
+    for (int i = 0; i < can_in.length; ++i)
+    {
+        inMsg.buf[i] = can_in.data.uint8[i];
+    }
+
+  // Can0.read(inMsg);
   // Read data: len = data length, buf = data byte(s)
 
   if ( settings.cursens == Canbus)
@@ -3427,18 +3567,18 @@ void canread()
       switch (inMsg.id)
       {
         case 0x521: //
-          CANmilliamps = (long)((inMsg.buf[2] << 24) | (inMsg.buf[3] << 16) | (inMsg.buf[4] << 8) | (inMsg.buf[5]));
-          if ( settings.cursens == Canbus)
+          CANmilliamps = rxBuf[5] + (rxBuf[4] << 8) + (rxBuf[3] << 16) + (rxBuf[2] << 24);
+          if (settings.cursens == Canbus)
           {
             RawCur = CANmilliamps;
             getcurrent();
           }
           break;
         case 0x522: //
-          voltage1 = (long)((inMsg.buf[2] << 24) | (inMsg.buf[3] << 16) | (inMsg.buf[4] << 8) | (inMsg.buf[5]));
+          voltage1 = rxBuf[5] + (rxBuf[4] << 8) + (rxBuf[3] << 16) + (rxBuf[2] << 24);
           break;
         case 0x523: //
-          voltage2 = (long)((inMsg.buf[2] << 24) | (inMsg.buf[3] << 16) | (inMsg.buf[4] << 8) | (inMsg.buf[5]));
+          voltage2 = rxBuf[5] + (rxBuf[4] << 8) + (rxBuf[3] << 16) + (rxBuf[2] << 24);
           break;
         default:
           break;
@@ -3552,7 +3692,7 @@ void CAB500()//3 byte current encoded in 1 2 3
   CANmilliamps = inbox;
   if (candebug == 1 && debug == 1)
   {
-
+    
     Serial.println();
     Serial.print(CANmilliamps, HEX);
     Serial.print(" | ");
@@ -3731,10 +3871,10 @@ void outputdebug()
     digitalWrite(OUT2, HIGH);
     digitalWrite(OUT3, HIGH);
     digitalWrite(OUT4, HIGH);
-    analogWrite(OUT5, 255);
-    analogWrite(OUT6, 255);
-    analogWrite(OUT7, 255);
-    analogWrite(OUT8, 255);
+    ledcWrite(OUT5, 255);
+    ledcWrite(OUT6, 255);
+    ledcWrite(OUT7, 255);
+    ledcWrite(OUT8, 255);
     outputstate ++;
   }
   else
@@ -3743,10 +3883,10 @@ void outputdebug()
     digitalWrite(OUT2, LOW);
     digitalWrite(OUT3, LOW);
     digitalWrite(OUT4, LOW);
-    analogWrite(OUT5, 0);
-    analogWrite(OUT6, 0);
-    analogWrite(OUT7, 0);
-    analogWrite(OUT8, 0);
+    ledcWrite(OUT5, 0);
+    ledcWrite(OUT6, 0);
+    ledcWrite(OUT7, 0);
+    ledcWrite(OUT8, 0);
     outputstate ++;
   }
   if (outputstate > 10)
@@ -3769,24 +3909,17 @@ void sendcommand() //Send Can Command to get data from slaves
     if (balancetimer < millis())
     {
       balancepauze = 1;
-      balpauzecnt ++;
       if (debug == 1)
       {
         Serial.println();
         Serial.println("Reset Balance Timer");
         Serial.println();
       }
-      if (balpauzecnt > balstop)
-      {
-        balancetimer = millis() + ((settings.balanceDuty + 60) * 1000);
-        bms.setBalIgnore(true);
-      }
+      balancetimer = millis() + ((settings.balanceDuty + 60) * 1000);
     }
     else
     {
       balancepauze = 0;
-      balpauzecnt = 0;
-      bms.setBalIgnore(false);
     }
   }
 
@@ -3866,7 +3999,8 @@ void sendcommand() //Send Can Command to get data from slaves
     }
   */
   delay(2);
-  Can0.write(msg);
+  ESPsendCAN(msg);
+  
   mescycle ++;
   nextmes ++;
 
@@ -3878,9 +4012,8 @@ void sendcommand() //Send Can Command to get data from slaves
 
 void resetwdog()
 {
-  noInterrupts();                                     //   No - reset WDT
-  WDOG_REFRESH = 0xA602;
-  WDOG_REFRESH = 0xB480;
+  noInterrupts(); 
+  esp_task_wdt_reset();
   interrupts();
 }
 
@@ -3888,7 +4021,7 @@ void pwmcomms()
 {
   int p = 0;
   p = map((currentact * 0.001), pwmcurmin, pwmcurmax, 50 , 255);
-  analogWrite(OUT7, p);
+  ledcWrite(OUT7, p);
   /*
     Serial.println();
       Serial.print(p*100/255);
@@ -3896,12 +4029,12 @@ void pwmcomms()
   */
   if (bms.getLowCellVolt() < settings.UnderVSetpoint)
   {
-    analogWrite(OUT8, 224); //12V to 10V converter 1.5V
+    ledcWrite(OUT8, 224); //12V to 10V converter 1.5V
   }
   else
   {
     p = map(SOC, 0, 100, 220, 50);
-    analogWrite(OUT8, p); //2V to 10V converter 1.5-10V
+    ledcWrite(OUT8, p); //2V to 10V converter 1.5-10V
   }
   /*
       Serial.println();
@@ -3912,17 +4045,17 @@ void pwmcomms()
 
 void dashupdate()
 {
-  Serial2.write("stat.txt=");
-  Serial2.write(0x22);
+  SERIAL_CSV.write("stat.txt=");
+  SERIAL_CSV.write(0x22);
   if (settings.ESSmode == 1)
   {
     switch (bmsstatus)
     {
       case (Boot):
-        Serial2.print(" Active ");
+        SERIAL_CSV.print(" Active ");
         break;
       case (Error):
-        Serial2.print(" Error ");
+        SERIAL_CSV.print(" Error ");
         break;
     }
   }
@@ -3931,101 +4064,101 @@ void dashupdate()
     switch (bmsstatus)
     {
       case (Boot):
-        Serial2.print(" Boot ");
+        SERIAL_CSV.print(" Boot ");
         break;
 
       case (Ready):
-        Serial2.print(" Ready ");
+        SERIAL_CSV.print(" Ready ");
         break;
 
       case (Precharge):
-        Serial2.print(" Precharge ");
+        SERIAL_CSV.print(" Precharge ");
         break;
 
       case (Drive):
-        Serial2.print(" Drive ");
+        SERIAL_CSV.print(" Drive ");
         break;
 
       case (Charge):
-        Serial2.print(" Charge ");
+        SERIAL_CSV.print(" Charge ");
         break;
 
       case (Error):
-        Serial2.print(" Error ");
+        SERIAL_CSV.print(" Error ");
         break;
     }
   }
-  Serial2.write(0x22);
-  Serial2.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  Serial2.write(0xff);
-  Serial2.write(0xff);
-  Serial2.print("soc.val=");
-  Serial2.print(SOC);
-  Serial2.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  Serial2.write(0xff);
-  Serial2.write(0xff);
-  Serial2.print("soc1.val=");
-  Serial2.print(SOC);
-  Serial2.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  Serial2.write(0xff);
-  Serial2.write(0xff);
-  Serial2.print("current.val=");
-  Serial2.print(currentact / 100, 0);
-  Serial2.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  Serial2.write(0xff);
-  Serial2.write(0xff);
-  Serial2.print("temp.val=");
-  Serial2.print(bms.getAvgTemperature(), 0);
-  Serial2.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  Serial2.write(0xff);
-  Serial2.write(0xff);
-  Serial2.print("templow.val=");
-  Serial2.print(bms.getLowTemperature(), 0);
-  Serial2.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  Serial2.write(0xff);
-  Serial2.write(0xff);
-  Serial2.print("temphigh.val=");
-  Serial2.print(bms.getHighTemperature(), 0);
-  Serial2.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  Serial2.write(0xff);
-  Serial2.write(0xff);
-  Serial2.print("volt.val=");
-  Serial2.print(bms.getPackVoltage() * 10, 0);
-  Serial2.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  Serial2.write(0xff);
-  Serial2.write(0xff);
-  Serial2.print("lowcell.val=");
-  Serial2.print(bms.getLowCellVolt() * 1000, 0);
-  Serial2.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  Serial2.write(0xff);
-  Serial2.write(0xff);
-  Serial2.print("highcell.val=");
-  Serial2.print(bms.getHighCellVolt() * 1000, 0);
-  Serial2.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  Serial2.write(0xff);
-  Serial2.write(0xff);
-  Serial2.print("firm.val=");
-  Serial2.print(firmver);
-  Serial2.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  Serial2.write(0xff);
-  Serial2.write(0xff);
-  Serial2.print("celldelta.val=");
-  Serial2.print((bms.getHighCellVolt() - bms.getLowCellVolt()) * 1000, 0);
-  Serial2.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  Serial2.write(0xff);
-  Serial2.write(0xff);
-  Serial2.print("cellbal.val=");
+  SERIAL_CSV.write(0x22);
+  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.print("soc.val=");
+  SERIAL_CSV.print(SOC);
+  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.print("soc1.val=");
+  SERIAL_CSV.print(SOC);
+  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.print("current.val=");
+  SERIAL_CSV.print(currentact / 100, 0);
+  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.print("temp.val=");
+  SERIAL_CSV.print(bms.getAvgTemperature(), 0);
+  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.print("templow.val=");
+  SERIAL_CSV.print(bms.getLowTemperature(), 0);
+  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.print("temphigh.val=");
+  SERIAL_CSV.print(bms.getHighTemperature(), 0);
+  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.print("volt.val=");
+  SERIAL_CSV.print(bms.getPackVoltage() * 10, 0);
+  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.print("lowcell.val=");
+  SERIAL_CSV.print(bms.getLowCellVolt() * 1000, 0);
+  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.print("highcell.val=");
+  SERIAL_CSV.print(bms.getHighCellVolt() * 1000, 0);
+  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.print("firm.val=");
+  SERIAL_CSV.print(firmver);
+  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.print("celldelta.val=");
+  SERIAL_CSV.print((bms.getHighCellVolt() - bms.getLowCellVolt()) * 1000, 0);
+  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.print("cellbal.val=");
   if (balancecells == 1)
   {
-    Serial2.print(0x01);
+    SERIAL_CSV.print(0x01);
   }
   else
   {
-    Serial2.print(0x00);
+    SERIAL_CSV.print(0x00);
   }
-  Serial2.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  Serial2.write(0xff);
-  Serial2.write(0xff);
+  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_CSV.write(0xff);
+  SERIAL_CSV.write(0xff);
 }
 
 
@@ -4055,7 +4188,7 @@ void chargercomms()
   {
     msg.id  =  0x1806E5F4; //broadcast to all Elteks
     msg.len = 8;
-    msg.ext = 1;
+    msg.flags.extended = 1;
     msg.buf[0] = highByte(uint16_t(settings.ChargeVsetpoint * settings.Scells * 10));
     msg.buf[1] = lowByte(uint16_t(settings.ChargeVsetpoint * settings.Scells * 10));
     msg.buf[2] = highByte(chargecurrent / ncharger);
@@ -4065,8 +4198,8 @@ void chargercomms()
     msg.buf[6] = 0x00;
     msg.buf[7] = 0x00;
 
-    Can0.write(msg);
-    msg.ext = 0;
+    ESPsendCAN(msg);
+    msg.flags.extended = 0;
   }
 
   if (settings.chargertype == Eltek)
@@ -4081,7 +4214,8 @@ void chargercomms()
     msg.buf[5] = lowByte(chargecurrent / ncharger);
     msg.buf[6] = highByte(chargecurrent / ncharger);
 
-    Can0.write(msg);
+    ESPsendCAN(msg);
+    
   }
   if (settings.chargertype == BrusaNLG5)
   {
@@ -4114,7 +4248,8 @@ void chargercomms()
     msg.buf[6] = lowByte(chargecurrent / ncharger);
     msg.buf[3] = highByte(uint16_t(((settings.ChargeVsetpoint * settings.Scells ) - chargerendbulk) * 10));
     msg.buf[4] = lowByte(uint16_t(((settings.ChargeVsetpoint * settings.Scells ) - chargerendbulk)  * 10));
-    Can0.write(msg);
+    ESPsendCAN(msg);
+    
 
     delay(2);
 
@@ -4135,14 +4270,16 @@ void chargercomms()
     msg.buf[4] = lowByte(uint16_t(((settings.ChargeVsetpoint * settings.Scells ) - chargerend) * 10));
     msg.buf[5] = highByte(chargecurrent / ncharger);
     msg.buf[6] = lowByte(chargecurrent / ncharger);
-    Can0.write(msg);
+    ESPsendCAN(msg);
+    
   }
   if (settings.chargertype == ChevyVolt)
   {
     msg.id  = 0x30E;
     msg.len = 1;
     msg.buf[0] = 0x02; //only HV charging , 0x03 hv and 12V charging
-    Can0.write(msg);
+    ESPsendCAN(msg);
+    
 
     msg.id  = 0x304;
     msg.len = 4;
@@ -4165,7 +4302,8 @@ void chargercomms()
       msg.buf[2] = highByte( 400);
       msg.buf[3] = lowByte( 400);
     }
-    Can0.write(msg);
+    ESPsendCAN(msg);
+    
   }
 }
 
@@ -4195,7 +4333,7 @@ void resetbalancedebug()
 {
   msg.id  =  0x0B0; //broadcast to all Elteks
   msg.len = 8;
-  msg.ext = 0;
+  msg.flags.extended = 0;
   msg.buf[0] = 0xFF;
   msg.buf[1] = 0x00;
   msg.buf[2] = 0xCD;
@@ -4205,7 +4343,8 @@ void resetbalancedebug()
   msg.buf[6] = 0x00;
   msg.buf[7] = 0x00;
 
-  Can0.write(msg);
+  ESPsendCAN(msg);
+  
 }
 
 void handleVictronLynx()
@@ -4239,10 +4378,3 @@ void isrCP ()
     accurlim = (micros() - pilottimer) * 100 / duration * 600; //Calculate the duty cycle then multiply by 600 to get mA current limit
   }
 }  // ******** end of isr CP ********
-
-void low_voltage_isr(void) {
-  EEPROM.update(1000, uint8_t(SOC));
-
-  PMC_LVDSC2 |= PMC_LVDSC2_LVWACK;  // clear if we can
-  PMC_LVDSC1 |= PMC_LVDSC1_LVDACK;
-}

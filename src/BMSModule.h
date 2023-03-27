@@ -1,5 +1,6 @@
 #pragma once
-#include <FlexCAN.h>
+#include <esp32_can.h>
+#include <CANUtil.h>
 
 class BMSModule
 {

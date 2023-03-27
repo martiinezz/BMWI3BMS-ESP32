@@ -229,7 +229,7 @@ void BMSModuleManager::setBatteryID(int id)
 
 void BMSModuleManager::setBalIgnore(bool BalIgn)
 {
-  BalIgnore = BalIgn;
+ BalIgnore = BalIgn;
 }
 
 void BMSModuleManager::setPstrings(int Pstrings)
@@ -489,6 +489,65 @@ void BMSModuleManager::printPackDetails(int digits, int CSCvariant)
   }
 }
 
+String BMSModuleManager::htmlPackDetails(float current, int SOC)
+{
+    uint8_t faults;
+    uint8_t alerts;
+    uint8_t COV;
+    uint8_t CUV;
+    int cellNum = 0;
+
+    String ptr = "<!DOCTYPE html> <head> <title> ESP32 SimpBMS</title> <meta http-equiv=\"refresh\" content=\"5\"> </head> <html>\n";
+
+    ptr += "   <h2>Modules: " + String(numFoundModules);
+    ptr += "   <br>Voltage: " + String(getPackVoltage());
+    ptr += "   <br><b>SOC: </b>" + String(SOC) +"%";
+    ptr += "   <br><b>Current: </b>" + String(current) + " A";
+    ptr += "   <br>Avg Cell Voltage: " + String( getAvgCellVolt());
+    ptr += "   <br>Low Cell Voltage: " + String(LowCellVolt);
+    ptr += "   <br>High Cell Voltage: " + String(HighCellVolt);
+    ptr += "   <br>Delta: " + String((HighCellVolt-LowCellVolt)*1000) + " mV";
+    ptr += "   <br>Avg Temp: " + String(getAvgTemperature());
+    ptr += "   </h2> <h3>";
+
+    bool isModuleColor1 = true; // switch between two colors
+    for (int y = 1; y < 63; y++)
+    {
+        if (modules[y].isExisting())
+        {
+            faults = modules[y].getFaults();
+            alerts = modules[y].getAlerts();
+            COV = modules[y].getCOVCells();
+            CUV = modules[y].getCUVCells();
+
+            if (isModuleColor1) {
+                ptr += " <br> <span style=\"background-color: #f5ad42\">"; // first color
+            }
+            else {
+                ptr += " <br> <span style=\"background-color: #42e0f5\">"; // second color
+            }
+            ptr += "<br>Module #" + String(y < 10 ? "0" : "") + String(y) + " ";
+            ptr += String(modules[y].getModuleVoltage()) + "V";
+
+            for (int i = 0; i < 12; i++)
+            {
+                ptr += "   Cell";
+                ptr += String(cellNum < 10 ? "0" : "") + String(cellNum++) + ": ";
+                ptr += String(modules[y].getCellVoltage(i)) + "V  ";
+
+            }
+            ptr += "    Temp 1: ";
+            ptr += String(modules[y].getTemperature(0));
+            ptr += "    Temp 2: ";
+            ptr += String(modules[y].getTemperature(1));
+
+            isModuleColor1 = !isModuleColor1; // toggle color
+        }
+    }
+    ptr += "</h3</html>";
+    return ptr;
+}
+
 void BMSModuleManager::printAllCSV(unsigned long timestamp, float current, int SOC)
 {
   for (int y = 1; y < 63; y++)
@@ -541,6 +600,4 @@ void BMSModuleManager::printAllCSV(unsigned long timestamp, float current, int S
       Serial2.println();
     }
   }
-  Serial2.print("12345");
-  Serial2.println();
 }
