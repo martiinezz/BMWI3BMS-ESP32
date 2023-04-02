@@ -80,11 +80,9 @@ void initLittleFS() {
 
 // Read File from LittleFS
 String readFile(fs::FS &fs, const char * path){
-  Serial.printf("Reading file: %s\r\n", path);
 
   File file = fs.open(path);
   if(!file || file.isDirectory()){
-    Serial.println("- failed to open file for reading");
     return String();
   }
   
@@ -98,7 +96,6 @@ String readFile(fs::FS &fs, const char * path){
 
 // Write file to LittleFS
 void writeFile(fs::FS &fs, const char * path, const char * message){
-  Serial.printf("Writing file: %s\r\n", path);
 
   File file = fs.open(path, FILE_WRITE);
   if(!file){
@@ -156,28 +153,28 @@ SerialConsole console;
 EEPROMSettings settings;
 
 /////Version Identifier/////////
-int firmver = 220719;
+int firmver = 230327;
 
 //Curent filter//
 float filterFrequency = 5.0 ;
 FilterOnePole lowpassFilter( LOWPASS, filterFrequency );
 
 //Simple BMS V2 wiring//
-const int ACUR2 = A7; // current 1 (GPIO35)
-const int ACUR1 = A6; // current 2 (GPIO34)
-const int IN1 = 13; // input 1 - high active (GPIO13)
-const int IN2 = 12; // input 2- high active (GPIO12)
-const int IN3 = 14; // input 1 - high active (GPIO14)
-const int IN4 = 27; // input 2- high active (GPIO...)
-const int OUT1 = 26;// output 1 - high active
-const int OUT2 = 25;// output 2 - high active
-const int OUT3 = 33;// output 3 - high active
-const int OUT4 = 32;// output 4 - high active
-const int OUT5 = 19;// output 5 - Low active
-const int OUT6 = 18;// output 6 - Low active
-const int OUT7 = 23;// output 7 - Low active
-const int OUT8 = 2;// output 8 - Low active
-const int led = 21;
+const int ACUR2 = ADC1_CHANNEL_5; // current 1 
+const int ACUR1 = ADC1_CHANNEL_4; // current 2 
+const int IN1 = 34;   // input 1 - high active
+const int IN2 = 35;   // input 2- high active 
+const int IN3 = 39;   // input 1 - high active
+const int IN4 = 36;   // input 2- high active 
+const int OUT1 = 25;  // output 1 - high active
+const int OUT2 = 26;  // output 2 - high active
+const int OUT3 = 22;  // output 3 - high active
+const int OUT4 = 19;  // output 4 - high active
+const int OUT5 = 4;   // output 5 - Low active
+const int OUT6 = 27;  // output 6 - Low active
+const int OUT7 = 13;  // output 7 - Low active
+const int OUT8 = 15;  // output 8 - Low active
+const int led = 22;
 const int CAN_RX = 17; 
 const int CAN_TX = 16;
 const int BMBfault = 22;
@@ -248,13 +245,13 @@ int batvcal = 0;
 
 uint16_t SOH = 0; // SOH place holder
 
-unsigned char alarmm[4] = {0, 0, 0, 0};
-unsigned char warning[4] = {0, 0, 0, 0};
-unsigned char mes[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-unsigned char bmsname[8] = {'S', 'I', 'M', 'P', ' ', 'B', 'M', 'S'};
-unsigned char bmsmanu[8] = {'T', 'O', 'M', ' ', 'D', 'E', ' ', 'B'};
+uint8_t alarmm[4] = {0, 0, 0, 0};
+uint8_t warning[4] = {0, 0, 0, 0};
+uint8_t mes[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+uint8_t bmsname[8] = {'S', 'I', 'M', 'P', ' ', 'B', 'M', 'S'};
+uint8_t bmsmanu[8] = {'T', 'O', 'M', ' ', 'D', 'E', ' ', 'B'};
 long unsigned int rxId;
-unsigned char len = 0;
+uint8_t len = 0;
 byte rxBuf[8];
 char msgString[128];                        // Array to store serial string
 uint32_t inbox;
@@ -276,7 +273,7 @@ int currentsense = 14;
 int sensor = 1;
 
 //Variables for SOC calc
-int SOC = 100; //State of Charge
+int SOC = 5; //State of Charge
 int SOCset = 0;
 int SOCtest = 0;
 
@@ -377,14 +374,14 @@ void loadSettings()
   settings.DisTaper = 0.3f; //V offset to bring in discharge taper to Zero Amps at settings.DischVsetpoint
   settings.chargecurrentmax = 200; //max charge current in 0.1A
   settings.chargecurrentend = 50; //end charge current in 0.1A
-  settings.socvolt[0] = 3100; //Voltage and SOC curve for voltage based SOC calc
+  settings.socvolt[0] = 3200; //Voltage and SOC curve for voltage based SOC calc
   settings.socvolt[1] = 10; //Voltage and SOC curve for voltage based SOC calc
-  settings.socvolt[2] = 4100; //Voltage and SOC curve for voltage based SOC calc
+  settings.socvolt[2] = 4150; //Voltage and SOC curve for voltage based SOC calc
   settings.socvolt[3] = 90; //Voltage and SOC curve for voltage based SOC calc
   settings.invertcur = 0; //Invert current sensor direction
   settings.cursens = 2;
   settings.curcan = LemCAB300;
-  settings.voltsoc = 0; //SOC purely voltage based
+  settings.voltsoc = 1; //SOC purely voltage based
   settings.Pretime = 2000; //ms of precharge time
   settings.conthold = 50; //holding duty cycle for contactor 0-255
   settings.Precurrent = 1000; //ma before closing main contator
@@ -516,7 +513,7 @@ void setup()
   pinMode(OUT6, OUTPUT); // pwm driver output
   pinMode(OUT7, OUTPUT); // pwm driver output
   pinMode(OUT8, OUTPUT); // pwm driver output
-  pinMode(led, OUTPUT);
+  // pinMode(led, OUTPUT);
 
   ledcSetup(0, pwmfreq, 8);
   ledcSetup(1, pwmfreq, 8);
@@ -529,7 +526,7 @@ void setup()
   ledcAttachPin(OUT8, 3);
 
   CAN0.setCANPins(gpio_num_t(CAN_RX), gpio_num_t(CAN_TX));
-  if (!CAN0.begin(500E3)) {
+  if (!CAN0.begin(500000)) {
     SERIALCONSOLE.println("Starting CAN failed!");
     while (1);
   }
@@ -602,7 +599,7 @@ Serial.print("CPU2: ");
 
   // enable WDT
   noInterrupts(); // don't allow interrupts while setting up WDOG
-  esp_task_wdt_init(3, true); //enable panic so ESP32 restarts after 3 sec
+  esp_task_wdt_init(5, true); //enable panic so ESP32 restarts after 5 sec
   esp_task_wdt_add(NULL); //add current thread to WDT watch
   esp_task_wdt_reset(); // reset timer
   delay(10);
@@ -872,7 +869,6 @@ void loop()
             if (bms.getLowCellVolt() < settings.UnderVSetpoint || bms.getHighCellVolt() > settings.OverVSetpoint || bms.getHighTemperature() > settings.OverTSetpoint)
             {
               digitalWrite(OUT2, HIGH);//trip breaker
-              bmsstatus = Error;
               bmsstatus = Error;
               ErrorReason = 5;
             }
@@ -1873,14 +1869,12 @@ void contcon()
         }
       }
     }
-    /*
-       SERIALCONSOLE.print(conttimer);
+    
        SERIALCONSOLE.print("  ");
        SERIALCONSOLE.print(contctrl);
        SERIALCONSOLE.print("  ");
        SERIALCONSOLE.print(contstat);
        SERIALCONSOLE.println("  ");
-    */
 
   }
   if (contctrl == 0)

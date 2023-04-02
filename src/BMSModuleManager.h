@@ -58,7 +58,7 @@ bool BalIgnore;
     float highestPackVolt;
     float lowestPackTemp;
     float highestPackTemp;
-        float highTemp;
+    float highTemp;
     float lowTemp;
     float SOC;
     float currentact;

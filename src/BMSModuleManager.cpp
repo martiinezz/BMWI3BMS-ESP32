@@ -497,11 +497,11 @@ String BMSModuleManager::htmlPackDetails(float current, int SOC)
     uint8_t CUV;
     int cellNum = 0;
 
-    String ptr = "<!DOCTYPE html> <head> <title> ESP32 SimpBMS</title> <meta http-equiv=\"refresh\" content=\"5\"> </head> <html>\n";
+    String ptr = "<!DOCTYPE html> <head> <title> ESP32 Based Simplified SimpBMS</title> <meta http-equiv=\"refresh\" content=\"8\"> </head> <html>\n";
 
     ptr += "   <h2>Modules: " + String(numFoundModules);
     ptr += "   <br>Voltage: " + String(getPackVoltage());
-    ptr += "   <br><b>SOC: </b>" + String(SOC) +"%";
+    ptr += "   <br>SOC: " + String(SOC) +"%";
     ptr += "   <br><b>Current: </b>" + String(current) + " A";
     ptr += "   <br>Avg Cell Voltage: " + String( getAvgCellVolt());
     ptr += "   <br>Low Cell Voltage: " + String(LowCellVolt);
