@@ -34,10 +34,10 @@ public:
         uint8_t orig = data[0];
         uint8_t addrByte = data[0];
         if (isWrite) addrByte |= 1;
-        SERIALBMS.write(addrByte);
-        SERIALBMS.write(&data[1], dataLen - 1);  //assumes that there are at least 2 bytes sent every time. There should be, addr and cmd at the least.
+        SERIAL_LCD.write(addrByte);
+        SERIAL_LCD.write(&data[1], dataLen - 1);  //assumes that there are at least 2 bytes sent every time. There should be, addr and cmd at the least.
         data[0] = addrByte;
-        if (isWrite) SERIALBMS.write(genCRC(data, dataLen));        
+        if (isWrite) SERIAL_LCD.write(genCRC(data, dataLen));        
 
         if (Logger::isDebug())
         {
@@ -59,9 +59,9 @@ public:
     { 
         int numBytes = 0; 
         if (Logger::isDebug()) SERIALCONSOLE.print("Reply: ");
-        while (SERIALBMS.available() && numBytes < maxLen)
+        while (SERIAL_LCD.available() && numBytes < maxLen)
         {
-            data[numBytes] = SERIALBMS.read();
+            data[numBytes] = SERIAL_LCD.read();
             if (Logger::isDebug()) {
                 SERIALCONSOLE.print(data[numBytes], HEX);
                 SERIALCONSOLE.print(" ");
@@ -70,7 +70,7 @@ public:
         }
         if (maxLen == numBytes)
         {
-            while (SERIALBMS.available()) SERIALBMS.read();
+            while (SERIAL_LCD.available()) SERIAL_LCD.read();
         }
         if (Logger::isDebug()) SERIALCONSOLE.println();
         return numBytes;

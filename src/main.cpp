@@ -174,7 +174,9 @@ const int OUT5 = 4;   // output 5 - Low active
 const int OUT6 = 27;  // output 6 - Low active
 const int OUT7 = 13;  // output 7 - Low active
 const int OUT8 = 15;  // output 8 - Low active
-const int led = 22;
+const int LCD_TX = 5;
+const int LCD_RX = 14;
+const int led = 12;
 const int CAN_RX = 17; 
 const int CAN_TX = 16;
 const int BMBfault = 22;
@@ -525,6 +527,8 @@ void setup()
   ledcAttachPin(OUT7, 2);
   ledcAttachPin(OUT8, 3);
 
+SERIAL_LCD.begin(115200, SERIAL_8N1, LCD_RX, LCD_TX); // start serial for LCD on selected PINS
+
   CAN0.setCANPins(gpio_num_t(CAN_RX), gpio_num_t(CAN_TX));
   if (!CAN0.begin(500000)) {
     SERIALCONSOLE.println("Starting CAN failed!");
@@ -605,13 +609,6 @@ Serial.print("CPU2: ");
   delay(10);
   interrupts();
   /////////////////
-
-
-  SERIALBMS.begin(612500); //Tesla serial bus
-  //VE.begin(19200); //Victron VE direct bus
-#if defined (__arm__) && defined (__SAM3X8E__)
-  serialSpecialInit(USART0, 612500); //required for Due based boards as the stock core files don't support 612500 baud.
-#endif
 
   SERIALCONSOLE.println("Started serial interface to BMS.");
 
@@ -4039,17 +4036,17 @@ void pwmcomms()
 
 void dashupdate()
 {
-  SERIAL_CSV.write("stat.txt=");
-  SERIAL_CSV.write(0x22);
+  SERIAL_LCD.write("stat.txt=");
+  SERIAL_LCD.write(0x22);
   if (settings.ESSmode == 1)
   {
     switch (bmsstatus)
     {
       case (Boot):
-        SERIAL_CSV.print(" Active ");
+        SERIAL_LCD.print(" Active ");
         break;
       case (Error):
-        SERIAL_CSV.print(" Error ");
+        SERIAL_LCD.print(" Error ");
         break;
     }
   }
@@ -4058,101 +4055,101 @@ void dashupdate()
     switch (bmsstatus)
     {
       case (Boot):
-        SERIAL_CSV.print(" Boot ");
+        SERIAL_LCD.print(" Boot ");
         break;
 
       case (Ready):
-        SERIAL_CSV.print(" Ready ");
+        SERIAL_LCD.print(" Ready ");
         break;
 
       case (Precharge):
-        SERIAL_CSV.print(" Precharge ");
+        SERIAL_LCD.print(" Precharge ");
         break;
 
       case (Drive):
-        SERIAL_CSV.print(" Drive ");
+        SERIAL_LCD.print(" Drive ");
         break;
 
       case (Charge):
-        SERIAL_CSV.print(" Charge ");
+        SERIAL_LCD.print(" Charge ");
         break;
 
       case (Error):
-        SERIAL_CSV.print(" Error ");
+        SERIAL_LCD.print(" Error ");
         break;
     }
   }
-  SERIAL_CSV.write(0x22);
-  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.print("soc.val=");
-  SERIAL_CSV.print(SOC);
-  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.print("soc1.val=");
-  SERIAL_CSV.print(SOC);
-  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.print("current.val=");
-  SERIAL_CSV.print(currentact / 100, 0);
-  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.print("temp.val=");
-  SERIAL_CSV.print(bms.getAvgTemperature(), 0);
-  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.print("templow.val=");
-  SERIAL_CSV.print(bms.getLowTemperature(), 0);
-  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.print("temphigh.val=");
-  SERIAL_CSV.print(bms.getHighTemperature(), 0);
-  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.print("volt.val=");
-  SERIAL_CSV.print(bms.getPackVoltage() * 10, 0);
-  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.print("lowcell.val=");
-  SERIAL_CSV.print(bms.getLowCellVolt() * 1000, 0);
-  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.print("highcell.val=");
-  SERIAL_CSV.print(bms.getHighCellVolt() * 1000, 0);
-  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.print("firm.val=");
-  SERIAL_CSV.print(firmver);
-  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.print("celldelta.val=");
-  SERIAL_CSV.print((bms.getHighCellVolt() - bms.getLowCellVolt()) * 1000, 0);
-  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.print("cellbal.val=");
+  SERIAL_LCD.write(0x22);
+  SERIAL_LCD.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.print("soc.val=");
+  SERIAL_LCD.print(SOC);
+  SERIAL_LCD.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.print("soc1.val=");
+  SERIAL_LCD.print(SOC);
+  SERIAL_LCD.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.print("current.val=");
+  SERIAL_LCD.print(currentact / 100, 0);
+  SERIAL_LCD.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.print("temp.val=");
+  SERIAL_LCD.print(bms.getAvgTemperature(), 0);
+  SERIAL_LCD.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.print("templow.val=");
+  SERIAL_LCD.print(bms.getLowTemperature(), 0);
+  SERIAL_LCD.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.print("temphigh.val=");
+  SERIAL_LCD.print(bms.getHighTemperature(), 0);
+  SERIAL_LCD.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.print("volt.val=");
+  SERIAL_LCD.print(bms.getPackVoltage() * 10, 0);
+  SERIAL_LCD.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.print("lowcell.val=");
+  SERIAL_LCD.print(bms.getLowCellVolt() * 1000, 0);
+  SERIAL_LCD.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.print("highcell.val=");
+  SERIAL_LCD.print(bms.getHighCellVolt() * 1000, 0);
+  SERIAL_LCD.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.print("firm.val=");
+  SERIAL_LCD.print(firmver);
+  SERIAL_LCD.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.print("celldelta.val=");
+  SERIAL_LCD.print((bms.getHighCellVolt() - bms.getLowCellVolt()) * 1000, 0);
+  SERIAL_LCD.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.print("cellbal.val=");
   if (balancecells == 1)
   {
-    SERIAL_CSV.print(0x01);
+    SERIAL_LCD.print(0x01);
   }
   else
   {
-    SERIAL_CSV.print(0x00);
+    SERIAL_LCD.print(0x00);
   }
-  SERIAL_CSV.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
-  SERIAL_CSV.write(0xff);
-  SERIAL_CSV.write(0xff);
+  SERIAL_LCD.write(0xff);  // We always have to send this three lines after each command sent to the nextion display.
+  SERIAL_LCD.write(0xff);
+  SERIAL_LCD.write(0xff);
 }
 
 
